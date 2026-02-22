@@ -1,11 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import Baraja from '../components/Baraja'
 import { baraja } from '../assets/baraja/baraja'
-import { View, ScrollView, StyleSheet, Text, Platform } from 'react-native'
+import { View, ScrollView, StyleSheet, Text, Platform, Button } from 'react-native'
 import { Audio } from 'expo-av';
 import { Card } from '../components/Card'
-import { Button } from 'react-native-web'
+
 import * as Speech from 'expo-speech';
+import { Accelerometer } from 'expo-sensors';
+let tf;
+let handpose;
+
+if (Platform.OS === 'web') {
+  tf = require('@tensorflow/tfjs');
+  handpose = require('@tensorflow-models/handpose');
+}
+
 
 export default function Index() {
 
@@ -31,6 +40,193 @@ export default function Index() {
   const [recording, setRecording] = useState(null);
   const [text, setText] = useState('');
   const [status, setStatus] = useState('Listo');
+  const isProcessingShake = useRef(false); // Ref para bloquear gestos repetidos
+  const videoRef = useRef(null)
+  const modelRef = useRef(null)
+  const [gesture, setGesture] = useState('Detectando...');
+  const [statusCamara, setStatusCamara] = useState('Inicializando...');
+  // ... dentro de tu componente Index ...
+const isProcessingGesture = useRef(false); // Bloqueo para la cámara
+
+// Modifica la función detectLoop para incluir la lógica de ejecución
+async function detectLoop() {
+  if (!videoRef.current || videoRef.current.readyState !== 4 || !modelRef.current) {
+    requestAnimationFrame(detectLoop);
+    return;
+  }
+
+  const predictions = await modelRef.current.estimateHands(videoRef.current);
+
+  if (predictions.length > 0) {
+    const landmarks = predictions[0].landmarks;
+    const currentGesture = getGesture(landmarks);
+    setGesture(currentGesture);
+
+    // LÓGICA DE ACTIVACIÓN:
+    // Solo actuamos si NO estamos procesando ya un gesto, no estamos hablando y es nuestro turno
+    if (!isProcessingGesture.current && !isSpeaking && !gameOver && turnoJugador) {
+      
+      if (currentGesture === 'Dos dedos') {
+        ejecutarAccionCamara(repartirCarta, "¡Pides carta!");
+      } 
+      else if (currentGesture === 'Mano abierta') {
+        ejecutarAccionCamara(pasarTurno, "Te plantas.");
+      }
+    }
+  } else {
+    setGesture('No se detecta mano');
+  }
+
+  requestAnimationFrame(detectLoop);
+}
+
+// Función para evitar spam de gestos
+const ejecutarAccionCamara = (accion, mensaje) => {
+  isProcessingGesture.current = true;
+  console.log(mensaje);
+  accion();
+
+  // Bloqueamos la detección de nuevos gestos durante 3 segundos 
+  // para dar tiempo a las locuciones y animaciones
+  setTimeout(() => {
+    isProcessingGesture.current = false;
+  }, 3000);
+};
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    Accelerometer.setUpdateInterval(100); // Intervalo más rápido para mayor precisión
+
+    const subscription = Accelerometer.addListener(({ x }) => {
+      // 1. Si el juego terminó, o la banca está jugando, o estamos hablando... ignorar.
+      if (gameOver || !turnoJugador || isSpeaking || isProcessingShake.current) {
+        return;
+      }
+
+      // 2. Umbral de fuerza (0.7 es más seguro que 0.5 para evitar "falsos positivos")
+      const UMBRAL = 0.7;
+
+      if (x > UMBRAL) {
+        ejecutarAccionGesto(repartirCarta);
+      } else if (x < -UMBRAL) {
+        ejecutarAccionGesto(pasarTurno);
+      }
+    });
+
+    return () => subscription.remove();
+  }, [gameOver, turnoJugador, isSpeaking]); // Re-suscribir cuando cambien estos estados críticos
+
+  // Función de apoyo para controlar el flujo
+  const ejecutarAccionGesto = (accion) => {
+    isProcessingShake.current = true; // Bloqueamos el sensor
+    accion(); // Ejecutamos (repartir o pasar)
+
+    // Desbloqueamos después de 2 segundos para permitir otro movimiento
+    setTimeout(() => {
+      isProcessingShake.current = false;
+    }, 2000);
+  };
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+
+      return;
+    }
+
+    init();
+  }, []);
+
+
+
+
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+
+      return;
+    }
+    init();
+  }, []);
+
+  async function init() {
+    await tf.ready();
+    modelRef.current = await handpose.load();
+    await startCamera();
+  }
+
+  async function startCamera() {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    videoRef.current.srcObject = stream;
+
+    videoRef.current.onloadeddata = () => {
+      videoRef.current.play();
+      detectLoop();
+    };
+  }
+
+  function distance(a, b) {
+    return Math.sqrt(
+      Math.pow(a[0] - b[0], 2) +
+      Math.pow(a[1] - b[1], 2)
+    );
+  }
+
+
+  function getGesture(landmarks) {
+    const wrist = landmarks[0];
+
+    const dIndex = distance(landmarks[8], wrist);
+    const dMiddle = distance(landmarks[12], wrist);
+    const dRing = distance(landmarks[16], wrist);
+    const dPinky = distance(landmarks[20], wrist);
+
+    // Umbral relativo (muy importante)
+    const avg = (dIndex + dMiddle + dRing + dPinky) / 4;
+    const threshold = avg * 0.75;
+
+    const indexUp = dIndex > threshold;
+    const middleUp = dMiddle > threshold;
+    const ringUp = dRing > threshold;
+    const pinkyUp = dPinky > threshold;
+
+    // Mano abierta
+    if (indexUp && middleUp && ringUp && pinkyUp) {
+      return 'Mano abierta';
+    }
+    // Dos dedos
+    if (indexUp && middleUp && !ringUp && !pinkyUp) {
+      return 'Dos dedos';
+    }
+
+    return 'Gesto no reconocido';
+  }
+
+
+
+  async function detectLoop() {
+    if (
+      !videoRef.current ||
+      videoRef.current.readyState !== 4 ||
+      !modelRef.current
+    ) {
+      requestAnimationFrame(detectLoop);
+      return;
+    }
+
+    const predictions = await modelRef.current.estimateHands(videoRef.current);
+
+    if (predictions.length > 0) {
+      const landmarks = predictions[0].landmarks;
+      setGesture(getGesture(landmarks));
+    } else {
+      setGesture('No se detecta mano');
+    }
+
+    requestAnimationFrame(detectLoop);
+  }
+
+
+
 
 
   async function startRecording() {
@@ -107,16 +303,16 @@ export default function Index() {
 
   const pasarTurno = () => {
     setTurnoJugador(false);
-    manoBanca[1].oculta = false; // Revelamos la carta oculta de la banca
-    setManoBanca([...manoBanca]); // Actualizamos el estado para reflejar el cambio
-    jugarBanca(mazo, manoBanca);
+    const nuevaManoBanca = manoBanca.map((c, i) => i === 1 ? { ...c, oculta: false } : c);
+    setManoBanca(nuevaManoBanca); // Actualizamos el estado para reflejar el cambio
+    jugarBanca(mazo, nuevaManoBanca);
   }
   const jugarBanca = (mazoActual, manoActual) => {
     const puntos = calcularPuntos(manoActual);
     const puntosJugador = calcularPuntos(manoJugador);
     const LIMITE_BANCA = 17;
 
-    if (puntos > 21) {      
+    if (puntos > 21) {
       determinarGanador(puntosJugador, puntos);
       return;
     }
@@ -146,20 +342,20 @@ export default function Index() {
     }
   };
   const determinarGanador = (puntosJugador, puntosBanca) => {
-  
 
-   if (puntosBanca > 21) {
-    Speech.speak("La banca se ha pasado. ¡Has ganado tú!");
-  } else if (puntosJugador > puntosBanca) {
-    Speech.speak(`Tienes ${puntosJugador} y la banca ${puntosBanca}. ¡Ganaste!`);
-  } else if (puntosBanca > puntosJugador) {
-    Speech.speak(`La banca tiene ${puntosBanca} y tú ${puntosJugador}. Gana la banca.`);
-  } else {
-    Speech.speak("Empate técnico. Se reparten las fichas.");
-  }
 
-  setGameOver(true); 
-};
+    if (puntosBanca > 21) {
+      Speech.speak("La banca se ha pasado. ¡Has ganado tú!");
+    } else if (puntosJugador > puntosBanca) {
+      Speech.speak(`Tienes ${puntosJugador} y la banca ${puntosBanca}. ¡Ganaste!`);
+    } else if (puntosBanca > puntosJugador) {
+      Speech.speak(`La banca tiene ${puntosBanca} y tú ${puntosJugador}. Gana la banca.`);
+    } else {
+      Speech.speak("Empate técnico. Se reparten las fichas.");
+    }
+
+    setGameOver(true);
+  };
   const hablar = (mano) => {
     if (mano > 21) {
       Speech.speak(`¡Te has pasado! La banca gana.`, { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false), onError: () => setIsSpeaking(false) });
@@ -196,6 +392,14 @@ export default function Index() {
   };
   return (
     <ScrollView contentContainerStyle={{ flex: 1 }}>
+      <View>
+        <video
+          ref={videoRef}
+          style={styles.video}
+          playsInline
+          muted
+        />
+      </View>
       <View>
         <Text>Turno: {turnoJugador ? "Jugador" : "Banca"}</Text>
         <Text>Cartas en el mazo: {mazo.length}</Text>
@@ -245,5 +449,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',      // Centra las cartas dentro de cada fila
     alignContent: 'center',     // Centra las filas verticalmente
 
+  },
+  video: {
+    width: 320,
+    height: 240,
+    borderRadius: 10
   }
 });
+
+
+
