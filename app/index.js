@@ -28,7 +28,7 @@ export default function BlackJackMaster() {
   const [gesture, setGesture] = useState('Esperando...');
   const [pantallaActual, setPantallaActual] = useState('Juego');
   // --- REFS DE CONTROL (Sincronización de hilos/sensores) ---
-  const stateRef = useRef({ gameOver, turnoJugador, isSpeaking, mazo, manoJugador, manoBanca });
+  const stateRef = useRef({ gameOver, turnoJugador, isSpeaking, mazo, manoJugador, manoBanca, pantallaActual });
   const isBlockingAction = useRef(false); // Cooldown global para evitar duplicados
   const videoRef = useRef(null);
   const modelRef = useRef(null);
