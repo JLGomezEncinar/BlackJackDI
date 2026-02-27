@@ -1,29 +1,56 @@
-import React, { useRef } from 'react';
-import { useGLTF } from '@react-three/drei/native';
+import React, { useRef, useState, Suspense } from 'react';
+import { useGLTF, OrbitControls } from '@react-three/drei/native';
 import { useFrame } from '@react-three/fiber/native';
+import { animated, useSpring } from '@react-spring/three';
+import * as Speech from 'expo-speech';
+import * as Haptics from 'expo-haptics';
 
 export function Model({ assetUri, isSpeaking, isThinking }) {
   // El hook usa la URI que viene desde index.js
   const { scene } = useGLTF(assetUri);
   const meshRef = useRef();
+  const [pressed, setPressed] = useState(false);
+  const { scale, color } = useSpring({
+  scale: pressed ? 1.7 : 1.5,
+  color: pressed ? '#ffcc00' : '#ffffff',
+  config: { tension: 300, friction: 15 },
+});
+
+
+  const alTocarModelo = () => {
+  setPressed(true);
+
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+  Speech.speak(
+    'Hola, soy tu experto en Blackjack. ¿En qué puedo ayudarte?',
+    { language: 'es-ES' }
+  );
+
+  // Volver al estado normal tras un momento
+  setTimeout(() => setPressed(false), 600);
+};
 
   useFrame((state) => {
-    if (meshRef.current) {
-      meshRef.current.rotation.y += 0.01;
+  if (!meshRef.current) return;
 
-      if (isThinking) {
-        meshRef.current.rotation.y += 0.1;
-      }
+  meshRef.current.rotation.y += 0.01;
 
-      if (isSpeaking) {
-        // Efecto de latido/vibración al hablar
-        const s = 1.5 + Math.sin(state.clock.elapsedTime * 15) * 0.1;
-        meshRef.current.scale.set(s, s, s);
-      } else {
-        meshRef.current.scale.set(1.5, 1.5, 1.5);
-      }
-    }
-  });
+  if (isThinking) {
+    meshRef.current.rotation.y += 0.05;
+  }
 
-  return <primitive ref={meshRef} object={scene} position={[0, -1, 0]} />;
+  if (isSpeaking) {
+    meshRef.current.position.y =
+      -1 + Math.sin(state.clock.elapsedTime * 8) * 0.05;
+  }
+});
+
+  return <animated.primitive
+  ref={meshRef}
+  object={scene}
+  position={[0, -1, 0]}
+  scale={scale}
+  onPointerDown={alTocarModelo}
+/>;
 }

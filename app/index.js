@@ -1,461 +1,375 @@
-import { useEffect, useState, useRef } from 'react'
-import Baraja from '../components/Baraja'
-import { baraja } from '../assets/baraja/baraja'
-import { View, ScrollView, StyleSheet, Text, Platform, Button } from 'react-native'
-import { Audio } from 'expo-av';
-import { Card } from '../components/Card'
-
+import React, { useEffect, useState, useRef } from 'react';
+import { View, ScrollView, StyleSheet, Text, Platform, Button, TouchableOpacity } from 'react-native';
 import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
 import { Accelerometer } from 'expo-sensors';
-let tf;
-let handpose;
+import { Card } from '../components/Card';
+import Baraja from '../components/Baraja';
+import { baraja } from '../assets/baraja/baraja';
+import IndexAR from '../components/IndexAR';
 
+// Carga condicional para Web
+let tf, handpose;
 if (Platform.OS === 'web') {
   tf = require('@tensorflow/tfjs');
+  require('@tensorflow/tfjs-backend-webgl');
   handpose = require('@tensorflow-models/handpose');
 }
 
-
-export default function Index() {
-
-
-  useEffect(() => {
-    const randomCards = baraja.sort(() => 0.5 - Math.random()).slice(0, 52);
-    const manoInicialJugador = randomCards.slice(0, 2);
-    const manoInicialBanca = randomCards.slice(2, 4).map((card, index) => ({ ...card, oculta: index === 1 })); // Cartas de la banca ocultas
-    const restoDelMazo = randomCards.slice(4);
-    setManoJugador(manoInicialJugador);
-    const puntosIniciales = calcularPuntos(manoInicialJugador);
-    setManoBanca(manoInicialBanca);
-    setMazo(restoDelMazo);
-    Speech.speak(`Tu mano inicial tiene ${puntosIniciales} puntos. ¿Quieres otra carta?`, { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false), onError: () => setIsSpeaking(false) });
-
-  }, [])
-  const [mazo, setMazo] = useState([])
-  const [manoJugador, setManoJugador] = useState([])
-  const [manoBanca, setManoBanca] = useState([])
-  const [turnoJugador, setTurnoJugador] = useState(true) // true = turno del jugador, false = turno de la banca
-  const [isSpeaking, setIsSpeaking] = useState(false);
+export default function BlackJackMaster() {
+  // --- ESTADOS DE JUEGO ---
+  const [mazo, setMazo] = useState([]);
+  const [manoJugador, setManoJugador] = useState([]);
+  const [manoBanca, setManoBanca] = useState([]);
+  const [turnoJugador, setTurnoJugador] = useState(true);
   const [gameOver, setGameOver] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [recording, setRecording] = useState(null);
-  const [text, setText] = useState('');
-  const [status, setStatus] = useState('Listo');
-  const isProcessingShake = useRef(false); // Ref para bloquear gestos repetidos
-  const videoRef = useRef(null)
-  const modelRef = useRef(null)
-  const [gesture, setGesture] = useState('Detectando...');
-  const [statusCamara, setStatusCamara] = useState('Inicializando...');
-  // ... dentro de tu componente Index ...
-const isProcessingGesture = useRef(false); // Bloqueo para la cámara
+  const [gesture, setGesture] = useState('Esperando...');
+  const [pantallaActual, setPantallaActual] = useState('Juego');
+  // --- REFS DE CONTROL (Sincronización de hilos/sensores) ---
+  const stateRef = useRef({ gameOver, turnoJugador, isSpeaking, mazo, manoJugador, manoBanca, pantallaActual });
+  const isBlockingAction = useRef(false); // Cooldown global para evitar duplicados
+  const videoRef = useRef(null);
+  const modelRef = useRef(null);
+  const rafRef = useRef(null);
+  const lastGestureRef = useRef('...');
 
-// Modifica la función detectLoop para incluir la lógica de ejecución
-async function detectLoop() {
-  if (!videoRef.current || videoRef.current.readyState !== 4 || !modelRef.current) {
-    requestAnimationFrame(detectLoop);
-    return;
-  }
-
-  const predictions = await modelRef.current.estimateHands(videoRef.current);
-
-  if (predictions.length > 0) {
-    const landmarks = predictions[0].landmarks;
-    const currentGesture = getGesture(landmarks);
-    setGesture(currentGesture);
-
-    // LÓGICA DE ACTIVACIÓN:
-    // Solo actuamos si NO estamos procesando ya un gesto, no estamos hablando y es nuestro turno
-    if (!isProcessingGesture.current && !isSpeaking && !gameOver && turnoJugador) {
-      
-      if (currentGesture === 'Dos dedos') {
-        ejecutarAccionCamara(repartirCarta, "¡Pides carta!");
-      } 
-      else if (currentGesture === 'Mano abierta') {
-        ejecutarAccionCamara(pasarTurno, "Te plantas.");
-      }
-    }
-  } else {
-    setGesture('No se detecta mano');
-  }
-
-  requestAnimationFrame(detectLoop);
-}
-
-// Función para evitar spam de gestos
-const ejecutarAccionCamara = (accion, mensaje) => {
-  isProcessingGesture.current = true;
-  console.log(mensaje);
-  accion();
-
-  // Bloqueamos la detección de nuevos gestos durante 3 segundos 
-  // para dar tiempo a las locuciones y animaciones
-  setTimeout(() => {
-    isProcessingGesture.current = false;
-  }, 3000);
-};
   useEffect(() => {
-    if (Platform.OS === 'web') return;
+    stateRef.current = { gameOver, turnoJugador, isSpeaking, mazo, manoJugador, manoBanca, pantallaActual };
+  }, [gameOver, turnoJugador, isSpeaking, mazo, manoJugador, manoBanca, pantallaActual]);
 
-    Accelerometer.setUpdateInterval(100); // Intervalo más rápido para mayor precisión
+  // --- 1. INICIALIZACIÓN ---
+  useEffect(() => {
+    iniciarPartida();
+  }, []);
 
-    const subscription = Accelerometer.addListener(({ x }) => {
-      // 1. Si el juego terminó, o la banca está jugando, o estamos hablando... ignorar.
-      if (gameOver || !turnoJugador || isSpeaking || isProcessingShake.current) {
-        return;
-      }
-
-      // 2. Umbral de fuerza (0.7 es más seguro que 0.5 para evitar "falsos positivos")
-      const UMBRAL = 0.7;
-
-      if (x > UMBRAL) {
-        ejecutarAccionGesto(repartirCarta);
-      } else if (x < -UMBRAL) {
-        ejecutarAccionGesto(pasarTurno);
-      }
-    });
-
-    return () => subscription.remove();
-  }, [gameOver, turnoJugador, isSpeaking]); // Re-suscribir cuando cambien estos estados críticos
-
-  // Función de apoyo para controlar el flujo
-  const ejecutarAccionGesto = (accion) => {
-    isProcessingShake.current = true; // Bloqueamos el sensor
-    accion(); // Ejecutamos (repartir o pasar)
-
-    // Desbloqueamos después de 2 segundos para permitir otro movimiento
-    setTimeout(() => {
-      isProcessingShake.current = false;
-    }, 2000);
+  const iniciarPartida = () => {
+    const shuffle = [...baraja].sort(() => Math.random() - 0.5);
+    setManoJugador(shuffle.slice(0, 2));
+    setManoBanca(shuffle.slice(2, 4).map((c, i) => ({ ...c, oculta: i === 1 })));
+    setMazo(shuffle.slice(4));
+    setGameOver(false);
+    setTurnoJugador(true);
+    lastGestureRef.current = '...';
+    isBlockingAction.current = false;
+    lanzarVoz("Partida nueva. ¿Carta o pasar?");
   };
 
+  // --- 2. CONTROL POR MOVIMIENTO (ACELERÓMETRO) ---
   useEffect(() => {
-    if (Platform.OS !== 'web') {
+    if (Platform.OS === 'web') return; // En web el acelerómetro requiere HTTPS/Permisos extra
 
-      return;
-    }
+    Accelerometer.setUpdateInterval(150);
+    const subscription = Accelerometer.addListener(({ x }) => {
+      const { gameOver, turnoJugador, isSpeaking } = stateRef.current;
+      if (gameOver || !turnoJugador || isSpeaking || isBlockingAction.current) return;
 
-    init();
+      if (x > 0.8) gestionarEntrada('PEDIR');
+      else if (x < -0.8) gestionarEntrada('PASS');
+    });
+    return () => subscription.remove();
   }, []);
 
-
-
-
-
+  // --- 3. CONTROL POR VISIÓN (WEB HANDPOSE) ---
   useEffect(() => {
-    if (Platform.OS !== 'web') {
-
-      return;
-    }
-    init();
-  }, []);
-
-  async function init() {
+  // Solo en web y cuando estamos en pantalla de juego
+  if (Platform.OS !== 'web' || pantallaActual !== 'Juego') return;
+  
+  let isMounted = true;
+  
+  const initVision = async () => {
     await tf.ready();
     modelRef.current = await handpose.load();
-    await startCamera();
-  }
-
-  async function startCamera() {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    videoRef.current.srcObject = stream;
-
-    videoRef.current.onloadeddata = () => {
-      videoRef.current.play();
-      detectLoop();
-    };
-  }
-
-  function distance(a, b) {
-    return Math.sqrt(
-      Math.pow(a[0] - b[0], 2) +
-      Math.pow(a[1] - b[1], 2)
-    );
-  }
-
-
-  function getGesture(landmarks) {
-    const wrist = landmarks[0];
-
-    const dIndex = distance(landmarks[8], wrist);
-    const dMiddle = distance(landmarks[12], wrist);
-    const dRing = distance(landmarks[16], wrist);
-    const dPinky = distance(landmarks[20], wrist);
-
-    // Umbral relativo (muy importante)
-    const avg = (dIndex + dMiddle + dRing + dPinky) / 4;
-    const threshold = avg * 0.75;
-
-    const indexUp = dIndex > threshold;
-    const middleUp = dMiddle > threshold;
-    const ringUp = dRing > threshold;
-    const pinkyUp = dPinky > threshold;
-
-    // Mano abierta
-    if (indexUp && middleUp && ringUp && pinkyUp) {
-      return 'Mano abierta';
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (videoRef.current && isMounted) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        rafRef.current = requestAnimationFrame(detectLoop);
+      }
+    } catch (err) {
+      console.error("Error cámara:", err);
     }
-    // Dos dedos
-    if (indexUp && middleUp && !ringUp && !pinkyUp) {
-      return 'Dos dedos';
+  };
+  
+  initVision();
+  
+  return () => {
+    isMounted = false;
+    // IMPORTANTE: Liberar cámara al salir
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
     }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  };
+}, [pantallaActual]); // Dependencia en pantallaActual
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
 
-    return 'Gesto no reconocido';
-  }
+    if (pantallaActual !== 'Juego') {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    } else {
+      // Si volvemos al juego, reanudamos
+      if (!rafRef.current && videoRef.current?.srcObject) {
+        rafRef.current = requestAnimationFrame(detectLoop);
+      }
+    }
+  }, [pantallaActual]);
+  const detectLoop = async () => {
+    // 1. Si ya no estamos en la pantalla de juego, cortamos el bucle inmediatamente
+    if (stateRef.current.pantallaActual !== 'Juego') return;
 
-
-
-  async function detectLoop() {
-    if (
-      !videoRef.current ||
-      videoRef.current.readyState !== 4 ||
-      !modelRef.current
-    ) {
-      requestAnimationFrame(detectLoop);
+    if (!stateRef.current.turnoJugador) {
+      rafRef.current = requestAnimationFrame(detectLoop);
       return;
     }
+    // 1. Verificamos que el video exista y esté listo
+    if (
+      videoRef.current &&
+      videoRef.current.readyState === 4 && // HAVE_ENOUGH_DATA
+      videoRef.current.videoWidth > 0 &&   // Evita el error [0x0]
+      modelRef.current &&
+      !stateRef.current.gameOver
+    ) {
+      try {
+        const predictions = await modelRef.current.estimateHands(videoRef.current);
 
-    const predictions = await modelRef.current.estimateHands(videoRef.current);
-
-    if (predictions.length > 0) {
-      const landmarks = predictions[0].landmarks;
-      setGesture(getGesture(landmarks));
-    } else {
-      setGesture('No se detecta mano');
+        if (predictions.length > 0) {
+          const gesto = getGesture(predictions[0].landmarks);
+          setGesture(gesto);
+          if (gesto !== lastGestureRef.current) {
+            lastGestureRef.current = gesto;
+            if (gesto !== '...') gestionarEntrada(gesto);
+          }
+        } else {
+          setGesture('Buscando mano...');
+          lastGestureRef.current = '...';
+        }
+      } catch (err) {
+        console.error("Error en la detección:", err);
+      }
     }
 
-    requestAnimationFrame(detectLoop);
-  }
+    // Continuar el bucle
+    rafRef.current = requestAnimationFrame(detectLoop);
+  };
 
+  const getGesture = (l) => {
+    const up = [l[8][1] < l[6][1], l[12][1] < l[10][1], l[16][1] < l[14][1], l[20][1] < l[18][1]];
+    const count = up.filter(f => f).length;
+    if (count >= 3) return 'PASS'; // Mano abierta
+    if (up[0] && up[1] && count === 2) return 'PEDIR'; // Dos dedos
+    return '...';
+  };
 
+  // --- 4. CONTROL POR VOZ (WHISPER / API EXTERNA) ---
+  const startRecording = async () => {
+    try {
+      await Audio.requestPermissionsAsync();
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      setRecording(recording);
+    } catch (err) { console.error("Error al grabar", err); }
+  };
 
-
-
-  async function startRecording() {
-    await Audio.requestPermissionsAsync();
-
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
-    });
-
-    const rec = new Audio.Recording();
-    await rec.prepareToRecordAsync(
-      Audio.RecordingOptionsPresets.HIGH_QUALITY
-    );
-    await rec.startAsync();
-
-    setRecording(rec);
-    setStatus('Grabando...');
-  }
-
-  async function stopRecording() {
+  const stopRecording = async () => {
+    setRecording(null);
     await recording.stopAndUnloadAsync();
     const uri = recording.getURI();
-    console.log(uri);
-    setRecording(null);
-    setStatus('Procesando...');
-    sendAudio(uri);
-  }
+    enviarAudioServidor(uri);
+  };
 
-  const sendAudio = async (uri) => {
+  const enviarAudioServidor = async (uri) => {
     const formData = new FormData();
+    if (Platform.OS === 'web') {
+      const res = await fetch(uri);
+      formData.append('audio', await res.blob(), 'audio.m4a');
+    } else {
+      formData.append('audio', { uri, name: 'audio.m4a', type: 'audio/m4a' });
+    }
 
     try {
-      // 1. Convertir la URI en un Blob (necesario para navegadores/web)
-      if (Platform.OS === 'web') {
-        const response = await fetch(uri);
-        const blob = await response.blob();
-        // 2. Añadir el blob al FormData
-        formData.append('audio', blob, 'recording.m4a');
+      const response = await fetch('http://100.54.1.50:5000/speech', { method: 'POST', body: formData });
+      const data = await response.json();
+      const orden = data.text.toLowerCase();
+      if (orden.includes('carta')) gestionarEntrada('PEDIR');
+      else if (orden.includes('pasar')) gestionarEntrada('PASS');
+      else lanzarVoz("No te entendí. Por favor di 'Carta' o 'Pasar'.");
+    } catch (e) { lanzarVoz("No te entendí."); }
+  };
 
-      } else {
-        formData.append('audio', {
-          uri: Platform.OS === 'android' ? uri : uri.replace('file://', ''),
-          name: 'audio.m4a',
-          type: 'audio/m4a',
-        });
+  // --- 5. NÚCLEO DE LÓGICA (Orquestador) ---
+  const gestionarEntrada = (accion) => {
+    const { isSpeaking, turnoJugador, gameOver } = stateRef.current;
+    if (isBlockingAction.current || isSpeaking || !turnoJugador || gameOver) return;
 
-      }
+    isBlockingAction.current = true; // Bloqueo de seguridad
+    if (accion === 'PEDIR') repartirCarta();
+    else if (accion === 'PASS') pasarTurno();
 
-      console.log("Enviando audio...");
+    setTimeout(() => { isBlockingAction.current = false; }, 2000); // Cooldown de 2 seg
+  };
 
-      const res = await fetch('http://18.207.130.56:5000/speech', {
-        method: 'POST',
-        body: formData,
+  const repartirCarta = () => {
+    const { mazo, manoJugador } = stateRef.current;
+    const [nueva, ...resto] = mazo;
+    const nuevaMano = [...manoJugador, nueva];
+    const puntos = calcularPuntos(nuevaMano);
 
-        // IMPORTANTE: No poner Content-Type manualmente
-      });
-
-      const json = await res.json();
-      console.log("Respuesta:", json);
-      if (json.text) setText(json.text);
-      if (text.toLowerCase().includes('carta')) {
-        repartirCarta('jugador');
-      } else if (text.toLowerCase().includes('pasar')) {
-        pasarTurno();
-      } else {
-        Speech.speak("No te he entendido, por favor di 'carta' o 'pasar'", { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false), onError: () => setIsSpeaking(false) });
-      }
-
-    } catch (error) {
-      console.error("Error detallado:", error);
-    }
-  }
-
-  const pasarTurno = () => {
-    setTurnoJugador(false);
-    const nuevaManoBanca = manoBanca.map((c, i) => i === 1 ? { ...c, oculta: false } : c);
-    setManoBanca(nuevaManoBanca); // Actualizamos el estado para reflejar el cambio
-    jugarBanca(mazo, nuevaManoBanca);
-  }
-  const jugarBanca = (mazoActual, manoActual) => {
-    const puntos = calcularPuntos(manoActual);
-    const puntosJugador = calcularPuntos(manoJugador);
-    const LIMITE_BANCA = 17;
+    setManoJugador(nuevaMano);
+    setMazo(resto);
 
     if (puntos > 21) {
-      determinarGanador(puntosJugador, puntos);
-      return;
-    }
-    // Condición de parada: Si ya tiene 17 o más, se planta
-    if (puntos >= LIMITE_BANCA && puntos <= 21) {
-      Speech.speak(`La banca se planta con ${puntos} puntos.`);
-      determinarGanador(puntosJugador, puntos);
-
-      return;
-    }
-
-    // Si no ha llegado al límite, pide una carta
-    if (mazoActual.length > 0) {
-      const [nuevaCarta, ...resto] = mazoActual;
-      const nuevaManoBanca = [...manoActual, nuevaCarta];
-
-      // Actualizamos los estados
-      setManoBanca(nuevaManoBanca);
-      setMazo(resto);
-
-      Speech.speak("La banca pide otra carta.");
-
-      // ESPERAMOS un poco (ej. 2 segundos) y volvemos a evaluar
-      setTimeout(() => {
-        jugarBanca(resto, nuevaManoBanca);
-      }, 2000);
+      lanzarVoz(`Te has pasado con ${puntos}. Gana la banca.`);
+      setGameOver(true);
+    } else {
+      lanzarVoz(`Tienes ${puntos}.`);
     }
   };
-  const determinarGanador = (puntosJugador, puntosBanca) => {
 
+  const pasarTurno = () => {
+    if (!stateRef.current.turnoJugador) return;
 
-    if (puntosBanca > 21) {
-      Speech.speak("La banca se ha pasado. ¡Has ganado tú!");
-    } else if (puntosJugador > puntosBanca) {
-      Speech.speak(`Tienes ${puntosJugador} y la banca ${puntosBanca}. ¡Ganaste!`);
-    } else if (puntosBanca > puntosJugador) {
-      Speech.speak(`La banca tiene ${puntosBanca} y tú ${puntosJugador}. Gana la banca.`);
+    // ⛔️ bloquea inmediatamente (NO esperes a React)
+    stateRef.current.turnoJugador = false;
+    setTurnoJugador(false);
+    lastGestureRef.current = '...';
+
+    // ✅ usa la mano ACTUAL desde el ref
+    const bancaVisible = stateRef.current.manoBanca.map(c => ({
+      ...c,
+      oculta: false
+    }));
+
+    setManoBanca(bancaVisible);
+
+    setTimeout(() => {
+      jugarBanca(stateRef.current.mazo, bancaVisible);
+    }, 1000);
+  };
+
+  const jugarBanca = (mazoActual, manoActual) => {
+    const puntosBanca = calcularPuntos(manoActual);
+    if (puntosBanca < 17) {
+      const [nueva, ...resto] = mazoActual;
+      const nuevaMano = [...manoActual, nueva];
+      setManoBanca(nuevaMano);
+      setMazo(resto);
+      setTimeout(() => jugarBanca(resto, nuevaMano), 1500);
     } else {
-      Speech.speak("Empate técnico. Se reparten las fichas.");
+      const pJu = calcularPuntos(stateRef.current.manoJugador);
+      determinarGanador(pJu, puntosBanca);
     }
+  };
 
+  const determinarGanador = (pJu, pBa) => {
+    let m = (pBa > 21 || pJu > pBa) ? "¡Has ganado!" : (pBa > pJu ? "Gana la banca." : "Empate.");
+    lanzarVoz(m);
     setGameOver(true);
   };
-  const hablar = (mano) => {
-    if (mano > 21) {
-      Speech.speak(`¡Te has pasado! La banca gana.`, { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false), onError: () => setIsSpeaking(false) });
-      setGameOver(true);
-    } else if (mano === 21) {
-      Speech.speak("¡Blackjack!", { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false), onError: () => setIsSpeaking(false) });
-      pasarTurno();
-    } else {
-      Speech.speak(`Tienes ${mano} puntos. ¿Quieres otra carta?`, { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false), onError: () => setIsSpeaking(false) });
-    }
-  }
 
-  const calcularPuntos = (mano) => {
-    return mano.reduce((total, card) => card.oculta ? total : total + card.value, 0);
-  }
-  const repartirCarta = () => {
-    if (mazo.length === 0) return; // Si no hay cartas, no hacemos nada
-
-    // 1. Extraemos la primera carta y el resto usando 'destructuring'
-    const [primeraCarta, ...restoDelMazo] = mazo;
-
-
-
-
-
-
-    setManoJugador([...manoJugador, primeraCarta]);
-    const puntosActuales = calcularPuntos([...manoJugador, primeraCarta]);
-
-    hablar(puntosActuales);
-
-
-    setMazo(restoDelMazo)
+  const lanzarVoz = (t) => {
+    Speech.speak(t, { language: 'es-ES', onStart: () => setIsSpeaking(true), onDone: () => setIsSpeaking(false) });
   };
+
+  const calcularPuntos = (mano) => mano.reduce((s, c) => s + (c.oculta ? 0 : c.value), 0);
+  if (pantallaActual === 'Asistente') {
+    // Aquí renderizamos tu código de Realidad Aumentada
+    // Añadimos un botón para volver
+    return (
+      <View style={{ flex: 1 }}>
+        <IndexAR />
+        <TouchableOpacity
+          style={styles.botonVolver}
+          onPress={() => setPantallaActual('Juego')}
+        >
+          <Text style={{ color: 'white' }}>← Volver al Juego</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
   return (
-    <ScrollView contentContainerStyle={{ flex: 1 }}>
-      <View>
-        <video
-          ref={videoRef}
-          style={styles.video}
-          playsInline
-          muted
+    <ScrollView contentContainerStyle={styles.container}>
+      {Platform.OS === 'web' && (
+        <View style={styles.camBox}>
+          <Text style={styles.info}>Gesto: {gesture}</Text>
+          <video ref={videoRef} style={styles.video} playsInline muted />
+        </View>
+      )}
+
+      <View style={styles.board}>
+        <Text style={styles.title}>{gameOver ? "FIN DE JUEGO" : "BLACKJACK AI"}</Text>
+
+        <Text style={styles.label}>BANCA: {calcularPuntos(manoBanca)}</Text>
+        <View style={styles.row}>{manoBanca.map((c, i) => <Card key={i} {...c} separada={true} />)}</View>
+
+        <Text style={styles.label}>TÚ: {calcularPuntos(manoJugador)}</Text>
+        <View style={styles.row}>{manoJugador.map((c, i) => <Card key={i} {...c} separada={true} />)}</View>
+      </View>
+
+      <View style={styles.buttons}>
+        <Button title="PEDIR CARTA" onPress={() => gestionarEntrada('PEDIR')} disabled={!turnoJugador || gameOver} />
+        <Button title="PASAR" onPress={() => gestionarEntrada('PASS')} disabled={!turnoJugador || gameOver} />
+        <Button
+          title={recording ? "ESCUCHANDO..." : "HABLAR (Diga 'Carta')"}
+          onPress={recording ? stopRecording : startRecording}
+          color={recording ? "red" : "#2196F3"}
         />
+        {gameOver && <Button title="REINTENTAR" onPress={() => iniciarPartida()} color="orange" />}
+        <TouchableOpacity
+          style={styles.botonRA}
+          onPress={() => setPantallaActual('Asistente')}
+        >
+          <Text style={styles.textoBotonRA}>🤖 Consultar Experto RA</Text>
+        </TouchableOpacity>
       </View>
-      <View>
-        <Text>Turno: {turnoJugador ? "Jugador" : "Banca"}</Text>
-        <Text>Cartas en el mazo: {mazo.length}</Text>
-      </View>
-      <View style={styles.banca}>
-        {manoBanca.map((card, index) => (
-          <Card key={index} image={card.image} value={card.value} oculta={card.oculta} separada={true} />
-        ))}
-        <Text>Puntos Banca: {calcularPuntos(manoBanca)}</Text>
-      </View>
-      <View style={styles.mazo}>
-        <Baraja />
-
-      </View>
-      <View style={styles.banca}>
-        {manoJugador.map((card, index) => (
-          <Card key={card.id} image={card.image} value={card.value} oculta={false} separada={true} />
-        ))}
-        <Text>Puntos Jugador: {calcularPuntos(manoJugador)}</Text>
-      </View>
-      <Button title="Repartir Carta" onPress={() => repartirCarta()} disabled={gameOver || !turnoJugador || isSpeaking} />
-      <Button title="Pasar Turno" onPress={() => pasarTurno()} disabled={gameOver || !turnoJugador || isSpeaking} />
-      <Button
-        title={recording ? 'Detener' : 'Grabar'}
-        onPress={recording ? stopRecording : startRecording}
-        disabled={gameOver || !turnoJugador || isSpeaking}
-      />
-      <Button title="Reiniciar Juego" onPress={() => window.location.reload()} disabled={!gameOver} />
-
     </ScrollView>
-  )
+  );
 }
 
 const styles = StyleSheet.create({
-  mazo: {
-    flexDirection: 'row',    // Alinea en horizontal
-    flexWrap: 'wrap',        // Permite varias filas
-    justifyContent: 'flex-end', // Centra las cartas
-    alignContent: 'center',     // Centra las filas verticalmente
-    alignItems: 'flex-end',      // Centra las cartas dentro de cada fila
-
+  container: { padding: 20, backgroundColor: '#1a4a1a', minHeight: '100%' },
+  camBox: { alignItems: 'center', marginBottom: 15 },
+  video: { width: 240, height: 180, borderRadius: 10, backgroundColor: '#000' },
+  board: { marginVertical: 10 },
+  row: { flexDirection: 'row', justifyContent: 'center', marginVertical: 10 },
+  title: { color: 'gold', fontSize: 26, fontWeight: 'bold', textAlign: 'center' },
+  label: { color: 'white', textAlign: 'center', marginTop: 10 },
+  info: { color: '#ccc', marginBottom: 5 },
+  buttons: { gap: 10, marginTop: 20 },
+  botonRA: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: 12,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: 'gold',
+    zIndex: 10,
   },
-  banca: {
-    flexDirection: 'row',    // Alinea en horizontal
-    flexWrap: 'wrap',        // Permite varias filas
-    justifyContent: 'center', // Centra las cartas  
-    alignItems: 'center',      // Centra las cartas dentro de cada fila
-    alignContent: 'center',     // Centra las filas verticalmente
-
+  textoBotonRA: {
+    color: 'gold',
+    fontWeight: 'bold',
   },
-  video: {
-    width: 320,
-    height: 240,
-    borderRadius: 10
+  botonVolver: {
+    position: 'absolute',
+    top: 50,
+    left: 20,
+    backgroundColor: '#cc0000',
+    padding: 10,
+    borderRadius: 10,
+    zIndex: 20,
   }
 });
-
 
 
