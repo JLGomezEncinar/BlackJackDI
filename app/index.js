@@ -310,10 +310,10 @@ export default function BlackJackMaster() {
         <Text style={styles.title}>{gameOver ? "FIN DE JUEGO" : "BLACKJACK AI"}</Text>
 
         <Text style={styles.label}>BANCA: {calcularPuntos(manoBanca)}</Text>
-        <View style={styles.row}>{manoBanca.map((c, i) => <Card key={i} {...c} separada={true} />)}</View>
+        <View style={styles.row}>{manoBanca.map((c, i) => <Card key={i} {...c}  />)}</View>
 
         <Text style={styles.label}>TÚ: {calcularPuntos(manoJugador)}</Text>
-        <View style={styles.row}>{manoJugador.map((c, i) => <Card key={i} {...c} separada={true} />)}</View>
+        <View style={styles.row}>{manoJugador.map((c, i) => <Card key={i} {...c}  />)}</View>
       </View>
 
       <View style={styles.buttons}>
@@ -355,6 +355,19 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     borderWidth: 1,
     borderColor: 'gold',
+    ...Platform.select({
+      web: {
+        position: 'absolute',
+        top: 50,
+        right: 20,
+      },
+      android: {
+        position: 'relative',
+        top: 0,
+        right: 0,
+        marginTop: 15,
+      },
+  }),
     zIndex: 10,
   },
   textoBotonRA: {

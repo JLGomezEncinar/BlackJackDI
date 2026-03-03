@@ -4,7 +4,7 @@ import { Image,StyleSheet, View } from 'react-native'
 export function Card({ image, value, oculta, separada }) {
     const reverso = require('../assets/baraja/reverso.jpg'); // Imagen de reverso de carta
   return (
-    <View style={[styles.cardContainer, {marginLeft: separada ? 0 : -80}]}>
+    <View style={[styles.cardContainer]}>
       <Image 
         source={oculta ? reverso : image} 
         style={styles.foto} 
@@ -24,6 +24,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000', // Sombra en iOS
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
+    
     
   },
   foto: {
