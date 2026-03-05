@@ -198,7 +198,8 @@ export default function BlackJackMaster() {
     }
 
     try {
-      const response = await fetch('http://100.54.1.50:5000/speech', { method: 'POST', body: formData });
+      // Aquí deberías tener un endpoint que reciba el audio, lo procese con Whisper y devuelva el texto
+      const response = await fetch('http://tu-servidor:5000/speech', { method: 'POST', body: formData });
       const data = await response.json();
       const orden = data.text.toLowerCase();
       if (orden.includes('carta')) gestionarEntrada('PEDIR');
@@ -355,6 +356,7 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     borderWidth: 1,
     borderColor: 'gold',
+    // Ajustes específicos por plataforma
     ...Platform.select({
       web: {
         position: 'absolute',

@@ -43,7 +43,7 @@ export default function IndexAR({ puntosJugador, alCerrar }) {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer token`, // Usa variables de entorno en producción
+          'Authorization': `Bearer token`, // Introducir el token real aquí
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
